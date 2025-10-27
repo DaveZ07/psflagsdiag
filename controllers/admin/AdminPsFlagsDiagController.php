@@ -32,11 +32,13 @@ class AdminPsFlagsDiagController extends ModuleAdminController
             $this->context->shop = new \Shop($scanShopId);
         }
 
-        $coreFlags = $this->getCoreFlagsSummary();
-        $availability = $this->getAvailabilitySummary();
+    // ensure we collect presenter flags first so we can include any dynamic flags
+    $shopCtxOk = $this->hasValidShopContext();
+    $presenterAgg = $shopCtxOk ? $this->collectFlagsFromPresenter($scanOnlyActive, 200, $scanLimit) : ['stats'=>[], 'total_scanned'=>0];
 
-        $shopCtxOk = $this->hasValidShopContext();
-        $presenterAgg = $shopCtxOk ? $this->collectFlagsFromPresenter($scanOnlyActive, 200, $scanLimit) : ['stats'=>[], 'total_scanned'=>0];
+    // core flags summary may be extended with dynamic flags discovered by presenter
+    $coreFlags = $this->getCoreFlagsSummary($presenterAgg['stats']);
+    $availability = $this->getAvailabilitySummary();
 
         $themeScan = $this->scanForFlagClasses($realScan, $cssPattern);
         $moduleScan = $includeModules ? $this->scanForFlagClasses(_PS_MODULE_DIR_, $cssPattern) : [];
@@ -275,7 +277,7 @@ class AdminPsFlagsDiagController extends ModuleAdminController
         return ['stats' => $stats, 'total_scanned' => $scanned];
     }
 
-    private function getCoreFlagsSummary()
+    private function getCoreFlagsSummary($presenterStats = [])
     {
         $db = Db::getInstance();
         $prefix = _DB_PREFIX_;
@@ -304,7 +306,7 @@ class AdminPsFlagsDiagController extends ModuleAdminController
               )
         ");
 
-        return [
+        $defaults = [
             ['key'=>'new','label'=>'New','hint'=>sprintf('PS_NB_DAYS_NEW = %d days',$nbDays),'count'=>$newCnt,'source'=>'date_add <= PS_NB_DAYS_NEW'],
             ['key'=>'on_sale','label'=>'On sale (flag)','hint'=>'product.on_sale = 1','count'=>$onSaleFlagCnt,'source'=>'product.on_sale'],
             ['key'=>'on_sale_specific_price','label'=>'On sale (specific price reduction)','hint'=>'Active specific price with reduction','count'=>$specificCnt,'source'=>'specific_price reduction'],
@@ -314,6 +316,24 @@ class AdminPsFlagsDiagController extends ModuleAdminController
             ['key'=>'in_stock','label'=>'In stock','hint'=>'stock_available.quantity > 0','count'=>$inCnt,'source'=>'stock_available'],
             ['key'=>'oos_backorder_enabled','label'=>'OOS with backorders allowed','hint'=>'quantity <= 0 AND (sa.out_of_stock in (1,2) OR (sa.out_of_stock=0 AND PS_ORDER_OUT_OF_STOCK=1))','count'=>$backorderCnt,'source'=>'stock_available + config'],
         ];
+
+        // merge dynamic flags discovered by presenter (if any)
+        if (!empty($presenterStats) && is_array($presenterStats)) {
+            $existingKeys = array_column($defaults, 'key');
+            foreach ($presenterStats as $k => $stat) {
+                if (!in_array($k, $existingKeys, true)) {
+                    $defaults[] = [
+                        'key' => $k,
+                        'label' => ucfirst(str_replace(['_','-'], [' ', ' '], $k)),
+                        'hint' => 'Detected dynamically by presenter',
+                        'count' => isset($stat['count']) ? (int)$stat['count'] : 0,
+                        'source' => 'presenter',
+                    ];
+                }
+            }
+        }
+
+        return $defaults;
     }
 
     private function getAvailabilitySummary()
